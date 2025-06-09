@@ -1,6 +1,5 @@
-// Update this page (the content is just a fallback if you fail to update the page)
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import useSWR from 'swr';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceDot } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,26 +8,38 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Bell } from 'lucide-react';
 import StatusBanner from '@/components/StatusBanner';
 import AnomalyLog from '@/components/AnomalyLog';
+import TimeRangeSelector from '@/components/TimeRangeSelector';
+import ConnectionStatus from '@/components/ConnectionStatus';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { API_CONFIG, ANOMALY_SEVERITY } from '@/config/api';
 
-// Mock data generator for demonstration
+// Mock data generator with severity levels
 const generateMockData = () => {
   const now = Date.now();
   const isAnomaly = Math.random() < 0.1; // 10% chance of anomaly
+  
+  let severity: keyof typeof ANOMALY_SEVERITY = 'LOW';
+  if (isAnomaly) {
+    const rand = Math.random();
+    if (rand < 0.1) severity = 'CRITICAL';
+    else if (rand < 0.3) severity = 'HIGH';
+    else if (rand < 0.6) severity = 'MEDIUM';
+    else severity = 'LOW';
+  }
   
   return {
     timestamp: now,
     temperature: 20 + Math.sin(now / 10000) * 5 + (Math.random() - 0.5) * (isAnomaly ? 15 : 2),
     vibration: 0.5 + Math.cos(now / 8000) * 0.3 + (Math.random() - 0.5) * (isAnomaly ? 2 : 0.1),
     is_anomaly: isAnomaly,
+    severity: severity,
     anomaly_reason: isAnomaly ? ['Temperature spike', 'Vibration anomaly', 'Sensor malfunction'][Math.floor(Math.random() * 3)] : null
   };
 };
 
 // Fetcher function for SWR
 const fetcher = async (url: string) => {
-  // For demo purposes, we'll use mock data
-  // In production, replace with: return axios.get(url).then(res => res.data)
-  await new Promise(resolve => setTimeout(resolve, 100)); // Simulate network delay
+  await new Promise(resolve => setTimeout(resolve, 100));
   return generateMockData();
 };
 
@@ -37,6 +48,7 @@ interface DataPoint {
   temperature: number;
   vibration: number;
   is_anomaly: boolean;
+  severity: keyof typeof ANOMALY_SEVERITY;
   anomaly_reason?: string | null;
   time: string;
 }
@@ -47,55 +59,102 @@ interface Anomaly {
   reason: string;
   temperature: number;
   vibration: number;
+  severity: keyof typeof ANOMALY_SEVERITY;
 }
 
 const Index = () => {
   const [chartData, setChartData] = useState<DataPoint[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [currentStatus, setCurrentStatus] = useState<'normal' | 'anomaly'>('normal');
+  const [currentSeverity, setCurrentSeverity] = useState<keyof typeof ANOMALY_SEVERITY>('LOW');
   const [lastAnomalyTime, setLastAnomalyTime] = useState<string>('');
+  const [timeRange, setTimeRange] = useState(15); // minutes
+  const [useWebSocket, setUseWebSocket] = useState(false);
 
-  // Poll data every second
-  const { data, error } = useSWR('/api/stream', fetcher, { 
-    refreshInterval: 1000,
-    revalidateOnFocus: false 
+  // WebSocket connection
+  const { isConnected, isRetrying, lastError, retry } = useWebSocket({
+    url: API_CONFIG.WS_URL,
+    onMessage: handleWebSocketMessage,
+    shouldReconnect: true
   });
 
-  useEffect(() => {
-    if (data) {
-      const newPoint: DataPoint = {
-        ...data,
-        time: new Date(data.timestamp).toLocaleTimeString()
-      };
-
-      // Update chart data (keep last 50 points)
-      setChartData(prev => {
-        const updated = [...prev, newPoint];
-        return updated.slice(-50);
-      });
-
-      // Handle anomalies
-      if (data.is_anomaly) {
-        setCurrentStatus('anomaly');
-        const anomalyTime = new Date(data.timestamp).toLocaleTimeString();
-        setLastAnomalyTime(anomalyTime);
-        
-        const newAnomaly: Anomaly = {
-          id: `${data.timestamp}-${Math.random()}`,
-          timestamp: data.timestamp,
-          reason: data.anomaly_reason || 'Unknown anomaly',
-          temperature: data.temperature,
-          vibration: data.vibration
-        };
-        
-        setAnomalies(prev => [newAnomaly, ...prev].slice(0, 100)); // Keep last 100 anomalies
-      } else {
-        setCurrentStatus('normal');
-      }
+  function handleWebSocketMessage(data: any) {
+    if (useWebSocket) {
+      handleNewData(data);
     }
-  }, [data]);
+  }
 
-  if (error) {
+  // SWR polling (fallback when WebSocket is not used)
+  const { data, error } = useSWR(
+    !useWebSocket ? '/api/stream' : null, 
+    fetcher, 
+    { 
+      refreshInterval: useWebSocket ? 0 : API_CONFIG.POLL_INTERVAL,
+      revalidateOnFocus: false 
+    }
+  );
+
+  const handleNewData = useCallback((newData: any) => {
+    const newPoint: DataPoint = {
+      ...newData,
+      time: new Date(newData.timestamp).toLocaleTimeString()
+    };
+
+    // Filter data based on time range
+    const cutoffTime = Date.now() - (timeRange * 60 * 1000);
+    
+    setChartData(prev => {
+      const updated = [...prev, newPoint];
+      return updated.filter(point => point.timestamp > cutoffTime);
+    });
+
+    // Handle anomalies
+    if (newData.is_anomaly) {
+      setCurrentStatus('anomaly');
+      setCurrentSeverity(newData.severity || 'LOW');
+      const anomalyTime = new Date(newData.timestamp).toLocaleTimeString();
+      setLastAnomalyTime(anomalyTime);
+      
+      const newAnomaly: Anomaly = {
+        id: `${newData.timestamp}-${Math.random()}`,
+        timestamp: newData.timestamp,
+        reason: newData.anomaly_reason || 'Unknown anomaly',
+        temperature: newData.temperature,
+        vibration: newData.vibration,
+        severity: newData.severity || 'LOW'
+      };
+      
+      setAnomalies(prev => [newAnomaly, ...prev].slice(0, API_CONFIG.MAX_ANOMALY_LOG));
+    } else {
+      setCurrentStatus('normal');
+    }
+  }, [timeRange]);
+
+  useEffect(() => {
+    if (data && !useWebSocket) {
+      handleNewData(data);
+    }
+  }, [data, useWebSocket, handleNewData]);
+
+  // Handle time range changes
+  const handleTimeRangeChange = (minutes: number) => {
+    setTimeRange(minutes);
+    const cutoffTime = Date.now() - (minutes * 60 * 1000);
+    setChartData(prev => prev.filter(point => point.timestamp > cutoffTime));
+  };
+
+  const getSeverityColor = (severity: keyof typeof ANOMALY_SEVERITY) => {
+    const severityInfo = ANOMALY_SEVERITY[severity];
+    switch (severityInfo.color) {
+      case 'yellow': return '#fbbf24';
+      case 'orange': return '#f97316';
+      case 'red': return '#ef4444';
+      case 'purple': return '#a855f7';
+      default: return '#ef4444';
+    }
+  };
+
+  if (error && !useWebSocket) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
         <Alert className="max-w-md border-destructive">
@@ -121,10 +180,25 @@ const Index = () => {
           </p>
         </div>
 
+        {/* Connection Status */}
+        <ConnectionStatus 
+          isConnected={useWebSocket ? isConnected : !error}
+          isRetrying={isRetrying}
+          lastError={lastError}
+          onRetry={retry}
+        />
+
         {/* Status Banner */}
         <StatusBanner 
           status={currentStatus} 
+          severity={currentSeverity}
           lastAnomalyTime={lastAnomalyTime}
+        />
+
+        {/* Time Range Selector */}
+        <TimeRangeSelector 
+          onRangeChange={handleTimeRangeChange}
+          currentRange={timeRange}
         />
 
         {/* Main Chart */}
@@ -132,7 +206,7 @@ const Index = () => {
           <CardHeader>
             <CardTitle className="text-white flex items-center gap-2">
               <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-              Live Sensor Data
+              Live Sensor Data ({timeRange} min view)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -173,7 +247,7 @@ const Index = () => {
                     dot={false}
                     name="Vibration (Hz)"
                   />
-                  {/* Anomaly points */}
+                  {/* Anomaly points with severity colors */}
                   {chartData.map((point, index) => 
                     point.is_anomaly ? (
                       <ReferenceDot
@@ -181,7 +255,7 @@ const Index = () => {
                         x={point.time}
                         y={point.temperature}
                         r={4}
-                        fill="#ef4444"
+                        fill={getSeverityColor(point.severity)}
                         stroke="#fca5a5"
                         strokeWidth={2}
                       />
