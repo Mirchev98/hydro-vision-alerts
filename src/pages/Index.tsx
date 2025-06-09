@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useCallback } from 'react';
 import useSWR from 'swr';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceDot } from 'recharts';
@@ -69,7 +68,7 @@ const Index = () => {
   const [currentSeverity, setCurrentSeverity] = useState<keyof typeof ANOMALY_SEVERITY>('LOW');
   const [lastAnomalyTime, setLastAnomalyTime] = useState<string>('');
   const [timeRange, setTimeRange] = useState(15); // minutes
-  const [useWebSocket, setUseWebSocket] = useState(false);
+  const [useWebSocketConnection, setUseWebSocketConnection] = useState(false);
 
   // WebSocket connection
   const { isConnected, isRetrying, lastError, retry } = useWebSocket({
@@ -79,17 +78,17 @@ const Index = () => {
   });
 
   function handleWebSocketMessage(data: any) {
-    if (useWebSocket) {
+    if (useWebSocketConnection) {
       handleNewData(data);
     }
   }
 
   // SWR polling (fallback when WebSocket is not used)
   const { data, error } = useSWR(
-    !useWebSocket ? '/api/stream' : null, 
+    !useWebSocketConnection ? '/api/stream' : null, 
     fetcher, 
     { 
-      refreshInterval: useWebSocket ? 0 : API_CONFIG.POLL_INTERVAL,
+      refreshInterval: useWebSocketConnection ? 0 : API_CONFIG.POLL_INTERVAL,
       revalidateOnFocus: false 
     }
   );
@@ -131,10 +130,10 @@ const Index = () => {
   }, [timeRange]);
 
   useEffect(() => {
-    if (data && !useWebSocket) {
+    if (data && !useWebSocketConnection) {
       handleNewData(data);
     }
-  }, [data, useWebSocket, handleNewData]);
+  }, [data, useWebSocketConnection, handleNewData]);
 
   // Handle time range changes
   const handleTimeRangeChange = (minutes: number) => {
@@ -154,7 +153,7 @@ const Index = () => {
     }
   };
 
-  if (error && !useWebSocket) {
+  if (error && !useWebSocketConnection) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
         <Alert className="max-w-md border-destructive">
@@ -182,7 +181,7 @@ const Index = () => {
 
         {/* Connection Status */}
         <ConnectionStatus 
-          isConnected={useWebSocket ? isConnected : !error}
+          isConnected={useWebSocketConnection ? isConnected : !error}
           isRetrying={isRetrying}
           lastError={lastError}
           onRetry={retry}
