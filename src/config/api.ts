@@ -1,8 +1,9 @@
+
 // API Configuration
 export const API_CONFIG = {
   // For production, replace with your actual backend URL
-  BASE_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
-  WS_URL: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws',
+  BASE_URL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
+  WS_URL: import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws',
   ENDPOINTS: {
     STREAM: '/api/stream',
     ANOMALIES: '/api/anomalies'
